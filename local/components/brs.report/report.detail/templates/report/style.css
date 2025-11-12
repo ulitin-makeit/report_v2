@@ -1,0 +1,9 @@
+.pagetitle-toolbar-field-view .pagetitle-inner-container .main-ui-filter-search {
+  max-width: 100% !important;
+}
+
+.select-report-universal { padding: 10px; }
+
+.universal-row { margin-bottom: 10px; }
+
+.main-ui-filter-search { margin-right: 15px; display: -webkit-box !important; display: -ms-flexbox !important; display: flex !important; -ms-flex-wrap: nowrap; flex-wrap: nowrap; }
