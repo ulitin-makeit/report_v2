@@ -52,4 +52,9 @@ class DealsExportController extends Controller {
             30                       // сортировка
         );
         
- 
+ return AjaxJson::createSuccess([
+            'message' => 'Генерация отчёта запущена. Ссылка на скачивание придёт на ваш email в течение нескольких минут.',
+            'email' => $userEmail
+        ]);
+    }
+}
