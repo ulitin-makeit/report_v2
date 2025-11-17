@@ -3,13 +3,13 @@
 namespace Brs\Report\Agent;
 
 use Bitrix\Main\Loader;
-use PhpOffice\PhpSpreadsheet\IOFactory;
-use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use Brs\Report\Helper\ExcelCsvMerger;
 
 /**
  * Агент для генерации Excel отчёта по сделкам.
  * 
- * Генерирует CSV через DealsReportGenerator, затем встраивает его в Excel шаблон.
+ * Генерирует CSV через DealsReportGenerator, 
+ * затем встраивает его в Excel через ExcelCsvMerger.
  */
 class DealsExportGenerator {
 
@@ -23,7 +23,7 @@ class DealsExportGenerator {
         
         try {
             
-            // Увеличиваем лимиты для больших файлов
+            // Увеличиваем лимиты для работы с большими файлами
             ini_set('memory_limit', '512M');
             set_time_limit(300);
             
@@ -51,12 +51,20 @@ class DealsExportGenerator {
                 throw new \Exception('Шаблон Excel не найден: ' . $templatePath);
             }
             
-            // Шаг 3: Создаём итоговый Excel файл
+            // Шаг 3: Встраиваем CSV в Excel через helper класс
             $finalExcelPath = $reportDir . "universal_report.xlsx";
             
-            self::mergeCsvIntoExcel($templatePath, $tempCsvPath, $finalExcelPath);
+            // Используем ExcelCsvMerger для объединения шаблона и CSV
+            ExcelCsvMerger::merge(
+                $templatePath,           // Шаблон Excel с существующими листами (Лист 1)
+                $tempCsvPath,            // Сгенерированный CSV файл с данными
+                $finalExcelPath,         // Итоговый Excel файл
+                'Отчет по сделкам',      // Название нового листа
+                ';',                     // Разделитель CSV (точка с запятой)
+                '"'                      // Символ обрамления в CSV (двойные кавычки)
+            );
             
-            // Удаляем временный CSV
+            // Удаляем временный CSV файл
             if (file_exists($tempCsvPath)) {
                 unlink($tempCsvPath);
             }
@@ -65,7 +73,7 @@ class DealsExportGenerator {
             $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
             $fileUrl = $protocol . "://" . $_SERVER['HTTP_HOST'] . "/upload/reports/universal_report.xlsx";
             
-            // Отправляем email с ссылкой
+            // Отправляем email с ссылкой на готовый файл
             \CEvent::Send(
                 'DEALS_EXPORT_REPORT_READY',
                 's1',
@@ -79,11 +87,11 @@ class DealsExportGenerator {
             
         } catch (\Exception $e) {
             
-            // Логируем ошибку
+            // Логируем ошибку в файл
             $logMessage = date('Y-m-d H:i:s') . " - Ошибка генерации отчёта для {$userEmail}: " . $e->getMessage() . "\n";
             file_put_contents($_SERVER['DOCUMENT_ROOT'] . "/upload/reports/error.log", $logMessage, FILE_APPEND);
             
-            // Отправляем email об ошибке
+            // Отправляем email об ошибке пользователю
             \CEvent::Send(
                 'DEALS_EXPORT_REPORT_ERROR',
                 's1',
@@ -95,72 +103,14 @@ class DealsExportGenerator {
             );
         }
         
-        // Возвращаем пустую строку - агент больше не повторяется
+        // Возвращаем пустую строку - агент выполняется один раз и удаляется
         return "";
-    }
-    
-    /**
-     * Встраивает CSV данные в Excel шаблон как новый лист.
-     * 
-     * @param string $templatePath Путь к шаблону Excel (ureport.xlsx с Листом 1)
-     * @param string $csvPath Путь к CSV файлу
-     * @param string $outputPath Путь к итоговому Excel файлу
-     * @return void
-     * @throws \Exception
-     */
-    private static function mergeCsvIntoExcel(string $templatePath, string $csvPath, string $outputPath): void {
-        
-        // Загружаем существующий Excel шаблон (с Листом 1)
-        $spreadsheet = IOFactory::load($templatePath);
-        
-        // Читаем CSV файл
-        $csvData = [];
-        if (($handle = fopen($csvPath, "r")) !== false) {
-            while (($row = fgetcsv($handle, 0, ";", '"')) !== false) {
-                $csvData[] = $row;
-            }
-            fclose($handle);
-        }
-        
-        if (empty($csvData)) {
-            throw new \Exception('CSV файл пустой или не удалось прочитать');
-        }
-        
-        // Создаём новый лист в конце (после Листа 1)
-        $newSheet = $spreadsheet->createSheet();
-        $newSheet->setTitle('Отчет по сделкам');
-        
-        // Записываем данные из CSV в новый лист
-        $rowIndex = 1;
-        foreach ($csvData as $rowData) {
-            $columnIndex = 'A';
-            foreach ($rowData as $cellValue) {
-                $newSheet->setCellValue($columnIndex . $rowIndex, $cellValue);
-                $columnIndex++;
-            }
-            $rowIndex++;
-        }
-        
-        // Применяем автоширину для первых 50 колонок (для читаемости)
-        $maxColumns = min(50, count($csvData[0] ?? []));
-        for ($i = 0; $i < $maxColumns; $i++) {
-            $column = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($i + 1);
-            $newSheet->getColumnDimension($column)->setAutoSize(true);
-        }
-        
-        // Сохраняем итоговый файл
-        $writer = IOFactory::createWriter($spreadsheet, 'Xlsx');
-        $writer->save($outputPath);
-        
-        // Освобождаем память
-        $spreadsheet->disconnectWorksheets();
-        unset($spreadsheet);
     }
     
     /**
      * Форматирует размер файла в читаемый вид.
      * 
-     * @param int $bytes Размер в байтах
+     * @param int $bytes Размер файла в байтах
      * @return string Отформатированная строка (например "2.5 MB")
      */
     private static function formatFileSize(int $bytes): string {
