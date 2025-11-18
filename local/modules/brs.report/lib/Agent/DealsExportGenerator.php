@@ -20,60 +20,71 @@ class DealsExportGenerator {
      * @return string Пустая строка = агент выполнен и больше не повторяется
      */
     public static function generate(string $userEmail): string {
+    
+        $logFile = $_SERVER['DOCUMENT_ROOT'] . "/upload/reports/agent_debug.log";
+        
+        // Функция для логирования
+        $log = function($message) use ($logFile) {
+            file_put_contents($logFile, date('Y-m-d H:i:s') . " - " . $message . "\n", FILE_APPEND);
+        };
+        
+        $log("=== СТАРТ АГЕНТА ===");
+        $log("Email: {$userEmail}");
         
         try {
             
-            // Увеличиваем лимиты для работы с большими файлами
+            $log("Установка лимитов...");
             ini_set('memory_limit', '512M');
             set_time_limit(300);
             
-            // Подключаем модуль с генератором отчётов
+            $log("Подключение модуля...");
             if (!Loader::includeModule('brs.reportuniversal')) {
                 throw new \Exception('Модуль brs.reportuniversal не установлен');
             }
             
-            // Путь к директории отчётов
+            $log("Создание директории...");
             $reportDir = $_SERVER['DOCUMENT_ROOT'] . "/upload/reports/";
-            if (!is_dir($reportDir)) {
-                mkdir($reportDir, 0755, true);
-            }
+        
             
-            // Шаг 1: Генерируем временный CSV файл
+            $log("Генерация CSV...");
             $tempCsvPath = $reportDir . "temp_report_" . time() . ".csv";
             
             $generator = new \Brs\ReportUniversal\DealsReportGenerator($tempCsvPath);
             $generator->generate();
             
-            // Шаг 2: Проверяем наличие шаблона Excel
+            $log("CSV создан: " . filesize($tempCsvPath) . " bytes");
+            
+            $log("Проверка шаблона Excel...");
             $templatePath = $reportDir . "ureport.xlsx";
             
             if (!file_exists($templatePath)) {
                 throw new \Exception('Шаблон Excel не найден: ' . $templatePath);
             }
             
-            // Шаг 3: Встраиваем CSV в Excel через helper класс
+            $log("Встраивание CSV в Excel...");
             $finalExcelPath = $reportDir . "universal_report.xlsx";
             
-            // Используем ExcelCsvMerger для объединения шаблона и CSV
             ExcelCsvMerger::merge(
-                $templatePath,           // Шаблон Excel с существующими листами (Лист 1)
-                $tempCsvPath,            // Сгенерированный CSV файл с данными
-                $finalExcelPath,         // Итоговый Excel файл
-                'Отчет по сделкам',      // Название нового листа
-                ';',                     // Разделитель CSV (точка с запятой)
-                '"'                      // Символ обрамления в CSV (двойные кавычки)
+                $templatePath,
+                $tempCsvPath,
+                $finalExcelPath,
+                'Отчет по сделкам',
+                ';',
+                '"'
             );
             
-            // Удаляем временный CSV файл
+            $log("Excel создан: " . filesize($finalExcelPath) . " bytes");
+            
+            $log("Удаление временного CSV...");
             if (file_exists($tempCsvPath)) {
                 unlink($tempCsvPath);
             }
             
-            // Формируем прямую ссылку на файл
+            $log("Формирование ссылки...");
             $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
             $fileUrl = $protocol . "://" . $_SERVER['HTTP_HOST'] . "/upload/reports/universal_report.xlsx";
             
-            // Отправляем email с ссылкой на готовый файл
+            $log("Отправка email на {$userEmail}...");
             \CEvent::Send(
                 'DEALS_EXPORT_REPORT_READY',
                 's1',
@@ -85,13 +96,16 @@ class DealsExportGenerator {
                 ]
             );
             
+            $log("=== АГЕНТ ЗАВЕРШЁН УСПЕШНО ===");
+            
         } catch (\Exception $e) {
             
-            // Логируем ошибку в файл
+            $log("!!! ОШИБКА: " . $e->getMessage());
+            $log("Stack trace: " . $e->getTraceAsString());
+            
             $logMessage = date('Y-m-d H:i:s') . " - Ошибка генерации отчёта для {$userEmail}: " . $e->getMessage() . "\n";
             file_put_contents($_SERVER['DOCUMENT_ROOT'] . "/upload/reports/error.log", $logMessage, FILE_APPEND);
             
-            // Отправляем email об ошибке пользователю
             \CEvent::Send(
                 'DEALS_EXPORT_REPORT_ERROR',
                 's1',
@@ -103,7 +117,7 @@ class DealsExportGenerator {
             );
         }
         
-        // Возвращаем пустую строку - агент выполняется один раз и удаляется
+        $log("Возврат пустой строки для завершения агента");
         return "";
     }
     
