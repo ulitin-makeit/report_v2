@@ -5,17 +5,18 @@ namespace Brs\Report\Helper;
 use Box\Spout\Reader\Common\Creator\ReaderEntityFactory;
 use Box\Spout\Writer\Common\Creator\WriterEntityFactory;
 use Box\Spout\Common\Entity\Row;
-use Box\Spout\Common\Entity\Cell;
 
 /**
  * Класс для встраивания CSV данных в Excel файл.
  * 
  * Использует Box Spout для потоковой работы с XLSX файлами.
  * Включает очистку данных для предотвращения повреждения файла.
+ * 
+ * Совместимо с: box/spout ^2.7 || ^3.0
  */
 class ExcelCsvMerger {
     
-    /** @var string Путь к файлу логов */
+    /** @var string|null Путь к файлу логов */
     private static $logFile = null;
     
     /** @var bool Включить подробное логирование */
@@ -44,15 +45,27 @@ class ExcelCsvMerger {
         
         // Инициализируем логирование
         self::$logFile = $_SERVER['DOCUMENT_ROOT'] . '/upload/reports/excel_merge.log';
+        
+        // Очищаем старый лог
+        if (file_exists(self::$logFile)) {
+            file_put_contents(self::$logFile, '');
+        }
+        
         self::log("=== Начало объединения Excel и CSV ===");
         self::log("Шаблон: {$templatePath}");
         self::log("CSV: {$csvPath}");
         self::log("Результат: {$outputPath}");
+        self::log("PHP версия: " . PHP_VERSION);
+        self::log("Memory limit: " . ini_get('memory_limit'));
         
         // Увеличиваем лимиты
+        $oldMemoryLimit = ini_get('memory_limit');
+        $oldTimeLimit = ini_get('max_execution_time');
+        
         ini_set('memory_limit', '1G');
         set_time_limit(600);
-        self::log("Лимиты установлены: memory_limit=1G, time_limit=600");
+        
+        self::log("Лимиты изменены: memory_limit {$oldMemoryLimit} -> 1G, time_limit {$oldTimeLimit} -> 600");
         
         // Проверяем существование файлов
         if (!file_exists($templatePath)) {
@@ -63,10 +76,18 @@ class ExcelCsvMerger {
             throw new \Exception("CSV файл не найден: {$csvPath}");
         }
         
+        // Проверяем размеры файлов
+        $templateSize = filesize($templatePath);
+        $csvSize = filesize($csvPath);
+        self::log("Размер шаблона: " . self::formatBytes($templateSize));
+        self::log("Размер CSV: " . self::formatBytes($csvSize));
+        
         // Проверяем что Box Spout установлен
         if (!class_exists('Box\Spout\Reader\Common\Creator\ReaderEntityFactory')) {
             throw new \Exception('Box Spout не установлен. Выполните: composer require box/spout');
         }
+        
+        self::log("Box Spout загружен успешно");
         
         try {
             
@@ -76,11 +97,13 @@ class ExcelCsvMerger {
             $reader = ReaderEntityFactory::createXLSXReader();
             $reader->open($templatePath);
             
+            self::log("Создание нового Excel файла...");
+            
             // Создаём writer для нового файла
             $writer = WriterEntityFactory::createXLSXWriter();
             $writer->openToFile($outputPath);
             
-            self::log("Копирование существующих листов...");
+            self::log("Копирование существующих листов из шаблона...");
             
             // Шаг 1: Копируем все существующие листы из шаблона
             self::copyExistingSheets($reader, $writer);
@@ -103,10 +126,18 @@ class ExcelCsvMerger {
             
             $fileSize = filesize($outputPath);
             self::log("Файл успешно создан. Размер: " . self::formatBytes($fileSize));
+            
+            // Проверяем что размер адекватный (не 0 байт)
+            if ($fileSize < 1000) {
+                throw new \Exception("Файл слишком маленький ({$fileSize} байт), возможно он повреждён");
+            }
+            
             self::log("=== Объединение завершено успешно ===");
             
         } catch (\Exception $e) {
-            self::log("ОШИБКА: " . $e->getMessage());
+            self::log("!!! ОШИБКА: " . $e->getMessage());
+            self::log("Файл: " . $e->getFile());
+            self::log("Строка: " . $e->getLine());
             self::log("Трейс: " . $e->getTraceAsString());
             throw new \Exception('Ошибка при объединении Excel и CSV: ' . $e->getMessage());
         }
@@ -115,8 +146,8 @@ class ExcelCsvMerger {
     /**
      * Копирует все листы из исходного Excel в новый файл.
      * 
-     * @param \Box\Spout\Reader\XLSX\Reader $reader Reader исходного файла
-     * @param \Box\Spout\Writer\XLSX\Writer $writer Writer нового файла
+     * @param mixed $reader Reader исходного файла (Box\Spout\Reader\XLSX\Reader)
+     * @param mixed $writer Writer нового файла (Box\Spout\Writer\XLSX\Writer)
      * @return void
      */
     private static function copyExistingSheets($reader, $writer): void {
@@ -129,7 +160,7 @@ class ExcelCsvMerger {
             
             $sheetIndex++;
             $sheetName = $sheet->getName();
-            self::log("Копирование листа #{$sheetIndex}: '{$sheetName}'");
+            self::log("  Лист #{$sheetIndex}: '{$sheetName}'");
             
             // Для первого листа не создаём новый (он уже есть по умолчанию)
             if ($isFirstSheet) {
@@ -146,21 +177,28 @@ class ExcelCsvMerger {
             
             $rowCount = 0;
             
-            // Копируем все строки построчно
+            // Копируем все строки построчно (потоковая обработка!)
             foreach ($sheet->getRowIterator() as $row) {
                 $writer->addRow($row);
                 $rowCount++;
+                
+                // Логируем прогресс для больших листов
+                if ($rowCount % 5000 === 0) {
+                    self::log("    Скопировано строк: {$rowCount}");
+                }
             }
             
-            self::log("Скопировано строк: {$rowCount}");
+            self::log("  Итого скопировано строк: {$rowCount}");
         }
+        
+        self::log("Все листы из шаблона скопированы. Всего листов: {$sheetIndex}");
     }
     
     /**
      * Добавляет новый лист с данными из CSV файла.
      * Применяет санитизацию данных для предотвращения повреждения файла.
      * 
-     * @param \Box\Spout\Writer\XLSX\Writer $writer Writer для Excel файла
+     * @param mixed $writer Writer для Excel файла (Box\Spout\Writer\XLSX\Writer)
      * @param string $csvPath Путь к CSV файлу
      * @param string $sheetName Название нового листа
      * @param string $delimiter Разделитель CSV
@@ -182,13 +220,19 @@ class ExcelCsvMerger {
         $csvReader->setFieldDelimiter($delimiter);
         $csvReader->setFieldEnclosure($enclosure);
         
-        // Устанавливаем кодировку UTF-8
-        $csvReader->setEncoding('UTF-8');
+        // Пытаемся установить кодировку UTF-8 (не все версии Spout поддерживают)
+        if (method_exists($csvReader, 'setEncoding')) {
+            $csvReader->setEncoding('UTF-8');
+            self::log("Установлена кодировка UTF-8 для CSV");
+        }
         
         $csvReader->open($csvPath);
         
         $rowCount = 0;
         $errorCount = 0;
+        $startTime = microtime(true);
+        
+        self::log("Начало обработки CSV данных...");
         
         // Читаем CSV и записываем построчно в Excel
         foreach ($csvReader->getSheetIterator() as $sheet) {
@@ -205,22 +249,37 @@ class ExcelCsvMerger {
                     
                     // Логируем прогресс каждые 10000 строк
                     if ($rowCount % 10000 === 0) {
-                        self::log("Обработано строк: {$rowCount}");
+                        $elapsed = round(microtime(true) - $startTime, 2);
+                        $speed = round($rowCount / $elapsed, 0);
+                        self::log("  Обработано строк: {$rowCount} (скорость: {$speed} строк/сек)");
                     }
                     
                 } catch (\Exception $e) {
                     $errorCount++;
-                    self::log("Ошибка в строке #{$rowCount}: " . $e->getMessage());
+                    self::log("  !!! Ошибка в строке #{$rowCount}: " . $e->getMessage());
                     
                     // Записываем пустую строку вместо проблемной
-                    $writer->addRow(Row::fromValues([]));
+                    $emptyRow = Row::fromValues(['[ERROR]']);
+                    $writer->addRow($emptyRow);
+                    
+                    // Если слишком много ошибок - прерываем
+                    if ($errorCount > 100) {
+                        self::log("  !!! Слишком много ошибок ({$errorCount}), прерываем обработку");
+                        throw new \Exception("Обработка прервана: слишком много ошибок в CSV файле");
+                    }
                 }
             }
         }
         
-        self::log("Всего обработано строк: {$rowCount}");
+        $totalTime = round(microtime(true) - $startTime, 2);
+        
+        self::log("Обработка CSV завершена:");
+        self::log("  Всего обработано строк: {$rowCount}");
+        self::log("  Время обработки: {$totalTime} сек");
+        self::log("  Средняя скорость: " . round($rowCount / $totalTime, 0) . " строк/сек");
+        
         if ($errorCount > 0) {
-            self::log("Строк с ошибками: {$errorCount}");
+            self::log("  !!! Строк с ошибками: {$errorCount}");
         }
         
         // Закрываем CSV Reader
@@ -235,16 +294,17 @@ class ExcelCsvMerger {
      */
     private static function sanitizeRow(Row $row): Row {
         
-        $cells = $row->getCells();
+        // В Box Spout получаем массив значений ячеек через toArray()
+        $cells = $row->toArray();
         $cleanedCells = [];
         
-        foreach ($cells as $cell) {
-            $value = $cell->getValue();
-            $cleanedValue = self::sanitizeCell($value);
-            $cleanedCells[] = Cell::fromValue($cleanedValue);
+        foreach ($cells as $cellValue) {
+            $cleanedValue = self::sanitizeCell($cellValue);
+            $cleanedCells[] = $cleanedValue;
         }
         
-        return new Row($cleanedCells);
+        // В Box Spout создаём строку из массива значений
+        return Row::fromValues($cleanedCells);
     }
     
     /**
@@ -255,7 +315,7 @@ class ExcelCsvMerger {
      */
     private static function sanitizeCell($value) {
         
-        // Если не строка - возвращаем как есть
+        // Если не строка - возвращаем как есть (числа, даты, boolean и т.д.)
         if (!is_string($value)) {
             return $value;
         }
@@ -268,7 +328,13 @@ class ExcelCsvMerger {
         // Шаг 1: Проверяем корректность UTF-8 и исправляем
         if (!mb_check_encoding($value, 'UTF-8')) {
             // Пытаемся конвертировать из Windows-1251
-            $value = mb_convert_encoding($value, 'UTF-8', 'Windows-1251');
+            $converted = @mb_convert_encoding($value, 'UTF-8', 'Windows-1251');
+            if ($converted !== false && $converted !== '') {
+                $value = $converted;
+            } else {
+                // Если не удалось конвертировать - удаляем некорректные символы
+                $value = mb_convert_encoding($value, 'UTF-8', 'UTF-8');
+            }
         }
         
         // Шаг 2: Удаляем BOM (Byte Order Mark) если есть
@@ -278,18 +344,37 @@ class ExcelCsvMerger {
         $value = str_replace("\0", '', $value);
         
         // Шаг 4: Удаляем невидимые управляющие символы (кроме \n, \r, \t)
+        // \x00-\x08 - управляющие символы до табуляции
+        // \x0B - вертикальная табуляция
+        // \x0C - перевод страницы  
+        // \x0E-\x1F - остальные управляющие символы
+        // \x7F - DEL
         $value = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $value);
         
-        // Шаг 5: Заменяем множественные пробелы на одинарные
+        // Шаг 5: Удаляем невидимые Unicode символы
+        // Zero Width Space, Zero Width Non-Joiner и т.д.
+        $value = preg_replace('/[\x{200B}-\x{200D}\x{FEFF}]/u', '', $value);
+        
+        // Шаг 6: Заменяем множественные пробелы на одинарные
         $value = preg_replace('/[ \t]+/', ' ', $value);
         
-        // Шаг 6: Ограничиваем длину (Excel имеет лимит 32767 символов на ячейку)
+        // Шаг 7: Удаляем пробелы в начале и конце
+        $value = trim($value);
+        
+        // Шаг 8: Ограничиваем длину (Excel имеет лимит 32767 символов на ячейку)
         if (mb_strlen($value) > 32000) {
             $value = mb_substr($value, 0, 32000) . '... [обрезано]';
         }
         
-        // Шаг 7: Экранируем XML-специальные символы (на всякий случай, хотя Spout должен это делать)
-        // НЕ применяем htmlspecialchars - Spout сам обрабатывает
+        // Шаг 9: Защита от CSV Injection
+        // Если строка начинается с =, +, -, @ - добавляем одинарную кавычку
+        // Excel не будет интерпретировать как формулу
+        if (strlen($value) > 0) {
+            $firstChar = $value[0];
+            if (in_array($firstChar, ['=', '+', '-', '@'], true)) {
+                $value = "'" . $value;
+            }
+        }
         
         return $value;
     }
@@ -307,9 +392,10 @@ class ExcelCsvMerger {
         }
         
         $timestamp = date('Y-m-d H:i:s');
-        $logMessage = "[{$timestamp}] {$message}\n";
+        $memoryUsage = round(memory_get_usage(true) / 1024 / 1024, 2);
+        $logMessage = "[{$timestamp}] [{$memoryUsage}MB] {$message}\n";
         
-        file_put_contents(self::$logFile, $logMessage, FILE_APPEND);
+        @file_put_contents(self::$logFile, $logMessage, FILE_APPEND);
     }
     
     /**
