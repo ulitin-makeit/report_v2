@@ -259,7 +259,7 @@ class ExcelCsvMerger {
                     self::log("  !!! Ошибка в строке #{$rowCount}: " . $e->getMessage());
                     
                     // Записываем пустую строку вместо проблемной
-                    $emptyRow = Row::fromValues(['[ERROR]']);
+                    $emptyRow = WriterEntityFactory::createRowFromArray(['[ERROR]'])
                     $writer->addRow($emptyRow);
                     
                     // Если слишком много ошибок - прерываем
@@ -293,7 +293,7 @@ class ExcelCsvMerger {
      * @return Row Очищенная строка
      */
     private static function sanitizeRow(Row $row): Row {
-        
+    
         // В Box Spout получаем массив значений ячеек через toArray()
         $cells = $row->toArray();
         $cleanedCells = [];
@@ -303,8 +303,8 @@ class ExcelCsvMerger {
             $cleanedCells[] = $cleanedValue;
         }
         
-        // В Box Spout создаём строку из массива значений
-        return Row::fromValues($cleanedCells);
+        // В Box Spout создаём строку через WriterEntityFactory
+        return WriterEntityFactory::createRowFromArray($cleanedCells);
     }
     
     /**
