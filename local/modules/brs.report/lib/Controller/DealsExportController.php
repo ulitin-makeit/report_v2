@@ -40,9 +40,30 @@ class DealsExportController extends Controller {
             ]);
         }
         
-        // Добавляем разовый агент на генерацию отчёта
+        // Получаем параметры дат из запроса
+        $dateFrom = $this->request->getPost('dateFrom');
+        $dateTo = $this->request->getPost('dateTo');
+        
+        // Валидация дат
+        if (!empty($dateFrom) && !$this->validateDate($dateFrom)) {
+            return AjaxJson::createError([
+                'message' => 'Неверный формат даты "От". Используйте формат ДД.ММ.ГГГГ'
+            ]);
+        }
+        
+        if (!empty($dateTo) && !$this->validateDate($dateTo)) {
+            return AjaxJson::createError([
+                'message' => 'Неверный формат даты "До". Используйте формат ДД.ММ.ГГГГ'
+            ]);
+        }
+        
+        // Формируем параметры для агента
+        $dateFromParam = !empty($dateFrom) ? $dateFrom : '';
+        $dateToParam = !empty($dateTo) ? $dateTo : '';
+        
+        // Добавляем разовый агент на генерацию отчёта с параметрами дат
         \CAgent::AddAgent(
-            "\\Brs\\Report\\Agent\\DealsExportGenerator::generate('{$userEmail}');",
+            "\\Brs\\Report\\Agent\\DealsExportGenerator::generate('{$userEmail}', '{$dateFromParam}', '{$dateToParam}');",
             "brs.report",           // модуль
             "N",                     // не проверять существование модуля
             60,                      // выполнить через 60 секунд
@@ -52,9 +73,37 @@ class DealsExportController extends Controller {
             30                       // сортировка
         );
         
- return AjaxJson::createSuccess([
-            'message' => 'Генерация отчёта запущена. Ссылка на скачивание придёт на ваш email в течение нескольких минут.',
+        $dateInfo = '';
+        if (!empty($dateFromParam) || !empty($dateToParam)) {
+            $dateInfo = ' за период';
+            if (!empty($dateFromParam)) {
+                $dateInfo .= ' с ' . $dateFromParam;
+            }
+            if (!empty($dateToParam)) {
+                $dateInfo .= ' по ' . $dateToParam;
+            }
+        }
+        
+        return AjaxJson::createSuccess([
+            'message' => 'Генерация отчёта' . $dateInfo . ' запущена. Ссылка на скачивание придёт на ваш email в течение нескольких минут.',
             'email' => $userEmail
         ]);
+    }
+    
+    /**
+     * Валидирует дату в формате ДД.ММ.ГГГГ
+     * 
+     * @param string $date Дата для проверки
+     * @return bool
+     */
+    private function validateDate(string $date): bool {
+        // Проверяем формат ДД.ММ.ГГГГ
+        if (!preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $date)) {
+            return false;
+        }
+        
+        // Проверяем что дата корректна
+        $parts = explode('.', $date);
+        return checkdate((int)$parts[1], (int)$parts[0], (int)$parts[2]);
     }
 }

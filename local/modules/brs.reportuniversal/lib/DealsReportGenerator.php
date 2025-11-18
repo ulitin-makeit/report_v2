@@ -67,6 +67,12 @@ class DealsReportGenerator
 	/** @var string Путь к выходному файлу */
 	private string $outputFilePath;
 
+	/** @var string|null Дата начала периода */
+	private ?string $dateFrom = null;
+
+	/** @var string|null Дата окончания периода */
+	private ?string $dateTo = null;
+
 	/**
 	 * Конструктор генератора отчетов
 	 */
@@ -79,6 +85,70 @@ class DealsReportGenerator
 		$this->loadCompositeProviders(); // Загрузка Composite провайдеров
 		$this->dealsIterator = new DealsIterator($this->nativeConnection, $this->selectFields);
 		$this->csvWriter = new CsvWriter($outputFilePath);
+	}
+
+	/**
+	 * Устанавливает фильтр по датам создания сделок
+	 *
+	 * @param string $dateFrom Дата начала в формате ДД.ММ.ГГГГ
+	 * @param string $dateTo Дата окончания в формате ДД.ММ.ГГГГ
+	 * @return void
+	 * @throws ReportException
+	 */
+	public function setDateFilter(string $dateFrom = '', string $dateTo = ''): void
+	{
+		$this->dateFrom = $dateFrom;
+		$this->dateTo = $dateTo;
+
+		// Формируем WHERE условие для фильтрации
+		$whereConditions = [];
+
+		if (!empty($dateFrom)) {
+			// Преобразуем дату из формата ДД.ММ.ГГГГ в ГГГГ-ММ-ДД для SQL
+			$dateFromSql = $this->convertDateToSql($dateFrom);
+			$whereConditions[] = "DATE_CREATE >= '{$dateFromSql} 00:00:00'";
+		}
+
+		if (!empty($dateTo)) {
+			// Преобразуем дату из формата ДД.ММ.ГГГГ в ГГГГ-ММ-ДД для SQL
+			$dateToSql = $this->convertDateToSql($dateTo);
+			$whereConditions[] = "DATE_CREATE <= '{$dateToSql} 23:59:59'";
+		}
+
+		if (!empty($whereConditions)) {
+			$whereClause = implode(' AND ', $whereConditions);
+			$this->dealsIterator->setWhereCondition($whereClause);
+		}
+	}
+
+	/**
+	 * Преобразует дату из формата ДД.ММ.ГГГГ в ГГГГ-ММ-ДД для SQL
+	 *
+	 * @param string $date Дата в формате ДД.ММ.ГГГГ
+	 * @return string Дата в формате ГГГГ-ММ-ДД
+	 * @throws ReportException
+	 */
+	private function convertDateToSql(string $date): string
+	{
+		// Проверяем формат
+		if (!preg_match('/^\d{2}\.\d{2}\.\d{4}$/', $date)) {
+			throw new ReportException("Неверный формат даты: {$date}. Ожидается ДД.ММ.ГГГГ");
+		}
+
+		$parts = explode('.', $date);
+		$day = $parts[0];
+		$month = $parts[1];
+		$year = $parts[2];
+
+		// Проверяем корректность даты
+		if (!checkdate((int)$month, (int)$day, (int)$year)) {
+			throw new ReportException("Некорректная дата: {$date}");
+		}
+
+		// Экранируем для безопасности SQL
+		$sqlDate = mysqli_real_escape_string($this->nativeConnection, "{$year}-{$month}-{$day}");
+
+		return $sqlDate;
 	}
 
 	/**

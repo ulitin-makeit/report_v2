@@ -17,9 +17,11 @@ class DealsExportGenerator {
 	 * Генерирует Excel отчёт и отправляет ссылку на email.
 	 *
 	 * @param string $userEmail Email пользователя для отправки ссылки
+	 * @param string $dateFrom Дата начала периода в формате ДД.ММ.ГГГГ (опционально)
+	 * @param string $dateTo Дата окончания периода в формате ДД.ММ.ГГГГ (опционально)
 	 * @return string Пустая строка = агент выполнен и больше не повторяется
 	 */
-	public static function generate(string $userEmail): string {
+	public static function generate(string $userEmail, string $dateFrom = '', string $dateTo = ''): string {
 
 		try {
 
@@ -54,7 +56,14 @@ class DealsExportGenerator {
 			// Шаг 1: Генерируем временный CSV файл
 			$tempCsvPath = $reportDir . "temp_report.csv";
 
+			// Создаем генератор с параметрами дат
 			$generator = new \Brs\ReportUniversal\DealsReportGenerator($tempCsvPath);
+			
+			// Устанавливаем фильтр по датам если они переданы
+			if (!empty($dateFrom) || !empty($dateTo)) {
+				$generator->setDateFilter($dateFrom, $dateTo);
+			}
+			
 			$generator->generate();
 
 			// Шаг 2: Проверяем наличие шаблона Excel
@@ -85,6 +94,20 @@ class DealsExportGenerator {
 			// Формируем прямую ссылку на файл
 			$fileUrl = "https://crm.rstls.ru/upload/reports/universal_report.xlsx";
 
+			// Формируем информацию о периоде для письма
+			$periodInfo = '';
+			if (!empty($dateFrom) || !empty($dateTo)) {
+				$periodInfo = 'Период: ';
+				if (!empty($dateFrom)) {
+					$periodInfo .= 'с ' . $dateFrom . ' ';
+				}
+				if (!empty($dateTo)) {
+					$periodInfo .= 'по ' . $dateTo;
+				}
+			} else {
+				$periodInfo = 'Все сделки';
+			}
+
 			// Отправляем email с ссылкой на готовый файл
 			\CEvent::Send(
 				'DEALS_EXPORT_REPORT_READY',
@@ -93,7 +116,8 @@ class DealsExportGenerator {
 					'EMAIL' => $userEmail,
 					'FILE_URL' => $fileUrl,
 					'DATE' => date('d.m.Y H:i'),
-					'FILE_SIZE' => self::formatFileSize(filesize($finalExcelPath))
+					'FILE_SIZE' => self::formatFileSize(filesize($finalExcelPath)),
+					'PERIOD' => $periodInfo
 				]
 			);
 
