@@ -2,11 +2,14 @@
 
 namespace Brs\Report\Helper;
 
+use Box\Spout\Reader\Common\Creator\ReaderEntityFactory;
+use Box\Spout\Writer\Common\Creator\WriterEntityFactory;
+
 /**
  * Класс для встраивания CSV данных в Excel файл.
  * 
- * Использует ZipArchive + XML для работы с XLSX без дополнительных библиотек.
- * XLSX файл - это ZIP архив с XML файлами внутри.
+ * Использует Box Spout для потоковой работы с XLSX файлами.
+ * Потребляет минимум памяти - обрабатывает файлы построчно.
  */
 class ExcelCsvMerger {
     
@@ -40,242 +43,103 @@ class ExcelCsvMerger {
             throw new \Exception("CSV файл не найден: {$csvPath}");
         }
         
-        // Копируем шаблон в итоговый файл
-        if (!copy($templatePath, $outputPath)) {
-            throw new \Exception('Не удалось скопировать шаблон Excel');
-        }
-        
-        $zip = new \ZipArchive();
-        
-        if ($zip->open($outputPath) !== true) {
-            throw new \Exception('Не удалось открыть Excel файл как ZIP архив');
+        // Проверяем что Box Spout установлен
+        if (!class_exists('Box\Spout\Reader\Common\Creator\ReaderEntityFactory')) {
+            throw new \Exception('Box Spout не установлен. Выполните: composer require box/spout');
         }
         
         try {
             
-            // Получаем информацию о существующих листах
-            $sheetInfo = self::getSheetInfo($zip);
+            // Читаем существующий Excel шаблон
+            $reader = ReaderEntityFactory::createXLSXReader();
+            $reader->open($templatePath);
             
-            // Создаём XML для нового листа из CSV
-            $sheetXml = self::createSheetXmlFromCsv($csvPath, $csvDelimiter, $csvEnclosure);
+            // Создаём writer для нового файла
+            $writer = WriterEntityFactory::createXLSXWriter();
+            $writer->openToFile($outputPath);
             
-            // Добавляем новый лист в архив
-            self::addNewSheet($zip, $sheetInfo, $sheetXml, $newSheetName);
+            // Шаг 1: Копируем все существующие листы из шаблона (включая Лист 1)
+            self::copyExistingSheets($reader, $writer);
+            
+            // Шаг 2: Добавляем новый лист с данными из CSV
+            self::addCsvSheet($writer, $csvPath, $newSheetName, $csvDelimiter, $csvEnclosure);
+            
+            // Закрываем все потоки
+            $reader->close();
+            $writer->close();
             
         } catch (\Exception $e) {
-            $zip->close();
-            throw $e;
+            throw new \Exception('Ошибка при объединении Excel и CSV: ' . $e->getMessage());
         }
-        
-        // Закрываем архив
-        $zip->close();
     }
     
     /**
-     * Получает информацию о существующих листах в Excel файле.
+     * Копирует все листы из исходного Excel в новый файл.
      * 
-     * @param \ZipArchive $zip Открытый ZIP архив Excel файла
-     * @return array Массив с данными о листах ['count' => количество, 'lastRId' => последний ID связи]
-     * @throws \Exception
-     */
-    private static function getSheetInfo(\ZipArchive $zip): array {
-        
-        // Читаем workbook.xml
-        $workbookXml = $zip->getFromName('xl/workbook.xml');
-        if ($workbookXml === false) {
-            throw new \Exception('Не удалось прочитать xl/workbook.xml');
-        }
-        
-        $workbook = simplexml_load_string($workbookXml);
-        if ($workbook === false) {
-            throw new \Exception('Не удалось распарсить xl/workbook.xml');
-        }
-        
-        // Регистрируем namespace
-        $workbook->registerXPathNamespace('ns', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main');
-        
-        $sheets = $workbook->xpath('//ns:sheet');
-        
-        return [
-            'count' => count($sheets),
-            'workbook' => $workbook
-        ];
-    }
-    
-    /**
-     * Добавляет новый лист в Excel файл.
-     * 
-     * @param \ZipArchive $zip Открытый ZIP архив
-     * @param array $sheetInfo Информация о существующих листах
-     * @param string $sheetXml XML содержимое нового листа
-     * @param string $sheetName Название нового листа
+     * @param \Box\Spout\Reader\XLSX\Reader $reader Reader исходного файла
+     * @param \Box\Spout\Writer\XLSX\Writer $writer Writer нового файла
      * @return void
-     * @throws \Exception
      */
-    private static function addNewSheet(\ZipArchive $zip, array $sheetInfo, string $sheetXml, string $sheetName): void {
+    private static function copyExistingSheets($reader, $writer): void {
         
-        $workbook = $sheetInfo['workbook'];
-        $existingSheetsCount = $sheetInfo['count'];
+        $isFirstSheet = true;
         
-        $newSheetId = $existingSheetsCount + 1;
-        $newSheetRId = 'rId' . ($newSheetId + 1);
-        
-        // Шаг 1: Добавляем файл нового листа
-        $zip->addFromString("xl/worksheets/sheet{$newSheetId}.xml", $sheetXml);
-        
-        // Шаг 2: Обновляем xl/workbook.xml
-        $workbook->registerXPathNamespace('ns', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main');
-        $workbook->registerXPathNamespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
-        
-        $sheetsNode = $workbook->xpath('//ns:sheets')[0];
-        
-        $newSheet = $sheetsNode->addChild('sheet', '', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main');
-        $newSheet->addAttribute('name', $sheetName);
-        $newSheet->addAttribute('sheetId', $newSheetId);
-        $newSheet->addAttribute('r:id', $newSheetRId, 'http://schemas.openxmlformats.org/officeDocument/2006/relationships');
-        
-        $zip->addFromString('xl/workbook.xml', $workbook->asXML());
-        
-        // Шаг 3: Обновляем xl/_rels/workbook.xml.rels
-        self::updateWorkbookRels($zip, $newSheetId, $newSheetRId);
-        
-        // Шаг 4: Обновляем [Content_Types].xml
-        self::updateContentTypes($zip, $newSheetId);
-    }
-    
-    /**
-     * Обновляет файл связей workbook.xml.rels.
-     * 
-     * @param \ZipArchive $zip Открытый ZIP архив
-     * @param int $sheetId ID нового листа
-     * @param string $rId Relationship ID
-     * @return void
-     * @throws \Exception
-     */
-    private static function updateWorkbookRels(\ZipArchive $zip, int $sheetId, string $rId): void {
-        
-        $relsXml = $zip->getFromName('xl/_rels/workbook.xml.rels');
-        if ($relsXml === false) {
-            throw new \Exception('Не удалось прочитать xl/_rels/workbook.xml.rels');
-        }
-        
-        $rels = simplexml_load_string($relsXml);
-        if ($rels === false) {
-            throw new \Exception('Не удалось распарсить xl/_rels/workbook.xml.rels');
-        }
-        
-        $newRel = $rels->addChild('Relationship', '', 'http://schemas.openxmlformats.org/package/2006/relationships');
-        $newRel->addAttribute('Id', $rId);
-        $newRel->addAttribute('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet');
-        $newRel->addAttribute('Target', "worksheets/sheet{$sheetId}.xml");
-        
-        $zip->addFromString('xl/_rels/workbook.xml.rels', $rels->asXML());
-    }
-    
-    /**
-     * Обновляет файл типов содержимого [Content_Types].xml.
-     * 
-     * @param \ZipArchive $zip Открытый ZIP архив
-     * @param int $sheetId ID нового листа
-     * @return void
-     * @throws \Exception
-     */
-    private static function updateContentTypes(\ZipArchive $zip, int $sheetId): void {
-        
-        $contentTypesXml = $zip->getFromName('[Content_Types].xml');
-        if ($contentTypesXml === false) {
-            throw new \Exception('Не удалось прочитать [Content_Types].xml');
-        }
-        
-        $contentTypes = simplexml_load_string($contentTypesXml);
-        if ($contentTypes === false) {
-            throw new \Exception('Не удалось распарсить [Content_Types].xml');
-        }
-        
-        $newOverride = $contentTypes->addChild('Override', '', 'http://schemas.openxmlformats.org/package/2006/content-types');
-        $newOverride->addAttribute('PartName', "/xl/worksheets/sheet{$sheetId}.xml");
-        $newOverride->addAttribute('ContentType', 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
-        
-        $zip->addFromString('[Content_Types].xml', $contentTypes->asXML());
-    }
-    
-    /**
-     * Создаёт XML содержимое листа Excel из CSV файла.
-     * 
-     * @param string $csvPath Путь к CSV файлу
-     * @param string $delimiter Разделитель CSV
-     * @param string $enclosure Символ обрамления CSV
-     * @return string XML содержимое листа
-     * @throws \Exception
-     */
-    private static function createSheetXmlFromCsv(string $csvPath, string $delimiter, string $enclosure): string {
-        
-        $xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n";
-        $xml .= '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ';
-        $xml .= 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' . "\n";
-        $xml .= '<sheetData>' . "\n";
-        
-        $handle = fopen($csvPath, "r");
-        if ($handle === false) {
-            throw new \Exception('Не удалось открыть CSV файл');
-        }
-        
-        $rowIndex = 1;
-        
-        while (($data = fgetcsv($handle, 0, $delimiter, $enclosure)) !== false) {
+        // Итерируемся по всем листам шаблона
+        foreach ($reader->getSheetIterator() as $sheet) {
             
-            $xml .= '<row r="' . $rowIndex . '">' . "\n";
-            
-            $colIndex = 0;
-            foreach ($data as $cellValue) {
-                
-                $colLetter = self::getColumnLetter($colIndex);
-                $cellRef = $colLetter . $rowIndex;
-                
-                // Определяем тип данных
-                if (is_numeric($cellValue) && strpos($cellValue, '.') !== false) {
-                    // Число с плавающей точкой
-                    $cellValue = str_replace(',', '.', $cellValue);
-                    $xml .= '<c r="' . $cellRef . '"><v>' . htmlspecialchars($cellValue, ENT_XML1, 'UTF-8') . '</v></c>' . "\n";
-                } elseif (is_numeric($cellValue)) {
-                    // Целое число
-                    $xml .= '<c r="' . $cellRef . '"><v>' . htmlspecialchars($cellValue, ENT_XML1, 'UTF-8') . '</v></c>' . "\n";
-                } else {
-                    // Текст (inlineStr)
-                    $escapedValue = htmlspecialchars($cellValue, ENT_XML1, 'UTF-8');
-                    $xml .= '<c r="' . $cellRef . '" t="inlineStr"><is><t>' . $escapedValue . '</t></is></c>' . "\n";
-                }
-                
-                $colIndex++;
+            // Для первого листа не создаём новый (он уже есть по умолчанию)
+            if ($isFirstSheet) {
+                $currentSheet = $writer->getCurrentSheet();
+                $isFirstSheet = false;
+            } else {
+                // Для остальных листов создаём новые
+                $writer->addNewSheetAndMakeItCurrent();
+                $currentSheet = $writer->getCurrentSheet();
             }
             
-            $xml .= '</row>' . "\n";
-            $rowIndex++;
+            // Устанавливаем название листа
+            $currentSheet->setName($sheet->getName());
+            
+            // Копируем все строки построчно (потоковая обработка - минимум памяти!)
+            foreach ($sheet->getRowIterator() as $row) {
+                $writer->addRow($row);
+            }
         }
-        
-        fclose($handle);
-        
-        $xml .= '</sheetData>' . "\n";
-        $xml .= '</worksheet>';
-        
-        return $xml;
     }
     
     /**
-     * Преобразует числовой индекс колонки в буквенное обозначение Excel.
+     * Добавляет новый лист с данными из CSV файла.
      * 
-     * @param int $index Индекс колонки (0 = A, 1 = B, 26 = AA и т.д.)
-     * @return string Буквенное обозначение (A, B, C, ..., Z, AA, AB, ...)
+     * @param \Box\Spout\Writer\XLSX\Writer $writer Writer для Excel файла
+     * @param string $csvPath Путь к CSV файлу
+     * @param string $sheetName Название нового листа
+     * @param string $delimiter Разделитель CSV
+     * @param string $enclosure Символ обрамления CSV
+     * @return void
+     * @throws \Exception
      */
-    private static function getColumnLetter(int $index): string {
+    private static function addCsvSheet($writer, string $csvPath, string $sheetName, string $delimiter, string $enclosure): void {
         
-        $letter = '';
+        // Создаём новый лист
+        $writer->addNewSheetAndMakeItCurrent();
+        $currentSheet = $writer->getCurrentSheet();
+        $currentSheet->setName($sheetName);
         
-        while ($index >= 0) {
-            $letter = chr($index % 26 + 65) . $letter;
-            $index = floor($index / 26) - 1;
+        // Создаём CSV Reader
+        $csvReader = ReaderEntityFactory::createCSVReader();
+        $csvReader->setFieldDelimiter($delimiter);
+        $csvReader->setFieldEnclosure($enclosure);
+        $csvReader->open($csvPath);
+        
+        // Читаем CSV и записываем построчно в Excel
+        // Потоковая обработка - не загружаем весь файл в память!
+        foreach ($csvReader->getSheetIterator() as $sheet) {
+            foreach ($sheet->getRowIterator() as $row) {
+                $writer->addRow($row);
+            }
         }
         
-        return $letter;
+        // Закрываем CSV Reader
+        $csvReader->close();
     }
 }
