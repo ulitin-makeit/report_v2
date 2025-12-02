@@ -33,6 +33,9 @@
 			'Сертификат'
 		];
 
+		// типы оплаты (для фильтра)
+		public static array $paymentTypes = [];
+
 		// поля отчёта (соответствие коду)
 		public static array $codeHeaderFields = array(
 
@@ -42,6 +45,7 @@
 			'TRANSACTION_AMOUNT_RUB' => 'Сумма транзакции, руб.', 
 			'RECEIPT_TYPE' => 'Тип чека', 
 			'PAYMENT_METHOD' => 'Способ оплаты', 
+			'PAYMENT_TYPE_DEAL' => 'Тип оплаты',
 			'PAYERS_FULL_NAME' => 'Клиент',
 			'UNLOADING_OFD' => 'Выгрузка ОФД',
 			'UNLOADING_1C' => 'Выгрузка 1С',
@@ -69,11 +73,46 @@
 				new Fields\StringField('TRANSACTION_AMOUNT_RUB'), // Сумма транзакции, руб.
 				new Fields\StringField('RECEIPT_TYPE'), // Тип чека
 				new Fields\StringField('PAYMENT_METHOD'), // Способ оплаты
+				new Fields\StringField('PAYMENT_TYPE_DEAL'), // Тип оплаты (из сделки)
 				new Fields\StringField('PAYERS_FULL_NAME'), // ФИО плательщика
 				new Fields\StringField('UNLOADING_OFD'), // Выгрузка ОФД
 				new Fields\StringField('UNLOADING_1C'), // Выгрузка 1С
 
 			];
+		}
+
+		/**
+		 * Загружает варианты типов оплаты из БД для фильтра
+		 * 
+		 * @return array
+		 */
+		public static function getPaymentTypes(): array {
+			if (!empty(self::$paymentTypes)) {
+				return self::$paymentTypes;
+			}
+
+			$connection = \Bitrix\Main\Application::getConnection();
+			
+			// Получаем ID поля
+			$sqlFieldId = "SELECT ID FROM b_user_field WHERE FIELD_NAME = 'UF_BRS_CRM_DEAL_PAYMENT_TYPE'";
+			$resultFieldId = $connection->query($sqlFieldId);
+			$fieldRow = $resultFieldId->fetch();
+			
+			if (!$fieldRow) {
+				return self::$paymentTypes;
+			}
+			
+			$fieldId = (int)$fieldRow['ID'];
+			
+			// Загружаем варианты списка
+			$sqlEnum = "SELECT VALUE FROM b_user_field_enum WHERE USER_FIELD_ID = {$fieldId} ORDER BY SORT, VALUE";
+			$resultEnum = $connection->query($sqlEnum);
+			
+			while ($row = $resultEnum->fetch()) {
+				self::$paymentTypes[] = $row['VALUE'];
+			}
+
+			return self::$paymentTypes;
 		}
 
 	}

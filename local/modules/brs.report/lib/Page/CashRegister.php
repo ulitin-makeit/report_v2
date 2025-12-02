@@ -296,6 +296,8 @@
 					$getListParams['filter'][$columnCode] = $filterData[$columnCode];
 				} else if($columnCode == 'RECEIPT_TYPE' && array_key_exists($columnCode, $filterData) && $type == 'string'){
 					$getListParams['filter'][$columnCode] = $filterData[$columnCode];
+				} else if($columnCode == 'PAYMENT_TYPE_DEAL' && array_key_exists($columnCode, $filterData) && $type == 'string'){
+					$getListParams['filter'][$columnCode] = $filterData[$columnCode];
 				} else if(array_key_exists($columnCode, $filterData) && $type == 'string'){
 					$getListParams['filter']['%'.$columnCode] = $filterData[$columnCode];
 				}
@@ -436,6 +438,23 @@
 					
 				}
 
+				if($this->columnNameToCode[$columnName] == 'PAYMENT_TYPE_DEAL'){
+
+					$type = 'list';
+					$items = [ '' => 'Любой' ];
+
+					// Загружаем варианты типов оплаты из БД
+					$paymentTypes = CashRegisterTable::getPaymentTypes();
+					foreach($paymentTypes as $name){
+						$items[$name] = $name;
+					}
+
+					$filter['items'] = $items;
+
+					$filter['params'] = [ 'multiple' => 'Y' ];
+					
+				}
+
 				$filter['type'] = $type;
 
 				$arFilter[] = $filter;
@@ -528,4 +547,3 @@
 		}
 
 	}
-
