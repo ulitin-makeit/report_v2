@@ -5,379 +5,43 @@
 	use Bitrix\Main\Application;
 	use Bitrix\Main\Config\Option;
 
-	use Brs\Report\Model\Orm\CashRegisterTable; // ОРМ таблицы отчёта
-	use Brs\ReceiptOfd\Models\ReceiptTable; // ОРМ таблицы отчёта
-	use Brs\Exchange1C\Models\AccountingEntryTable; // проводки
-
-	ini_set('memory_limit', '5000M');
+	use Brs\Report\Model\Orm\AgentTable; // ОРМ таблицы отчёта
+	use Brs\Report\Model\Orm\UniversalTable; // ОРМ таблицы отчёта
+	use Brs\Main\Model\Orm\Crm\Deal\DealPropertyTable; // свойства сделки
 
 	/**
 	 * Агент отчёта, перезаписывает данные в таблицу по нему (чтобы можно было фильтровать и список использовать на странице отчёта).
-	 * 
-	 * Оптимизированная версия с предзагрузкой данных:
-	 * - Сделки загружаются одним запросом
-	 * - Контакты загружаются одним запросом
-	 * - Даты оказания услуги загружаются напрямую из UF_DATE_SERVICE_PROVISION
-	 * - Проводки загружаются одним запросом
-	 * - Типы оплаты загружаются из UF_BRS_CRM_DEAL_PAYMENT_TYPE
 	 */
-	class CashRegister {
-
-		static array $nds = array(
-			'VAT_10' => 'CalculatedVat10110', // налог на добавленную стоимость (НДС) 10%;
-			'VAT_20' => 'CalculatedVat20120', // НДС 20%
-			'VAT_0' => 0, // НДС 0%;
-			'VAT_NO' => 0, // НДС не облагается;
-			'VAT_10_110' => 'CalculatedVat10110', // вычисленный НДС 10% от 110% суммы;
-			'VAT_18_118' => 'CalculatedVat18118', // вычисленный НДС 18% от 118% суммы;
-			'VAT_20_120' => 'CalculatedVat20120'
-		);
+	class Agent {
 
 		static array $headerCodes; // содержит массив соответствий
-
-		/** @var array Предзагруженные данные сделок [deal_id => ['CATEGORY_ID' => ..., 'CONTACT_ID' => ...]] */
-		private static array $dealsData = [];
-
-		/** @var array Предзагруженные данные контактов [contact_id => 'ФИО'] */
-		private static array $contactsData = [];
-
-		/** @var array Предзагруженные даты оказания услуги [deal_id => 'date'] */
-		private static array $serviceDates = [];
-
-		/** @var array Предзагруженные проводки [uid => true] */
-		private static array $accountingEntries = [];
-
-		/** @var array Предзагруженные типы оплаты [deal_id => 'payment_type_name'] */
-		private static array $paymentTypes = [];
 
 		/*
 		 * Метод инициализирует перезапись отчёта в таблице.
 		 * 
+		 * @param string $typeRefresh
 		 * @return string
 		 */
-		static function init() : string {
+		static function init(string $typeRefresh = 'all') : string {
 			
+			\ini_set('memory_limit', -1);
+			\set_time_limit(0);
+
 			// подключаем модули
 			\CModule::IncludeModule('crm');
-			\CModule::IncludeModule('brs.receiptofd');
-			\CModule::IncludeModule('brs.exchange1c');
 			\CModule::IncludeModule('brs.report');
 			\CModule::IncludeModule('brs.financialcard');
 			\CModule::IncludeModule('brs.incomingpaymentecomm');
 
-			// предзагружаем все данные
-			self::preloadAllData();
-
 			// генерируем сам отчёт
-			$document = self::generateDocumentReport();
+			$document = self::generateDocumentReport($typeRefresh);
 
-			// заполняем таблицу
 			self::fillReportTable($document);
 
-			// очищаем предзагруженные данные
-			self::clearPreloadedData();
+			Option::set('brs.report', 'BRS_REPORT_AGENT_DATE_REFRESH', (new \DateTime())->format('d.m.Y H:i:s'), SITE_ID); // сохраняем дату последнего обновления отчёта
 
-			Option::set('brs.report', 'BRS_REPORT_CASH_REGISTER_DATE_REFRESH', (new \DateTime())->format('d.m.Y H:i:s'), SITE_ID); // сохраняем дату последнего обновления отчёта
+			return '\\Brs\\Report\\Agent\\Agent::init();';
 
-			return '\\Brs\\Report\\Agent\\CashRegister::init();';
-
-		}
-
-		/**
-		 * Предзагружает все необходимые данные одним набором запросов
-		 * 
-		 * @return void
-		 */
-		private static function preloadAllData(): void
-		{
-			self::preloadDeals();
-			self::preloadContacts();
-			self::preloadServiceDates();
-			self::preloadAccountingEntries();
-			self::preloadPaymentTypes();
-		}
-
-		/**
-		 * Очищает предзагруженные данные для освобождения памяти
-		 * 
-		 * @return void
-		 */
-		private static function clearPreloadedData(): void
-		{
-			self::$dealsData = [];
-			self::$contactsData = [];
-			self::$serviceDates = [];
-			self::$accountingEntries = [];
-			self::$paymentTypes = [];
-		}
-
-		/**
-		 * Предзагружает данные сделок (CATEGORY_ID, CONTACT_ID) одним запросом
-		 * 
-		 * @return void
-		 */
-		private static function preloadDeals(): void
-		{
-			$connection = Application::getConnection();
-			$sql = "SELECT ID, CATEGORY_ID, CONTACT_ID FROM b_crm_deal";
-			
-			$result = $connection->query($sql);
-			
-			while ($row = $result->fetch()) {
-				self::$dealsData[(int)$row['ID']] = [
-					'CATEGORY_ID' => $row['CATEGORY_ID'],
-					'CONTACT_ID' => $row['CONTACT_ID']
-				];
-			}
-		}
-
-		/**
-		 * Предзагружает данные контактов (ФИО) одним запросом
-		 * По аналогии с ClientDataProvider
-		 * 
-		 * @return void
-		 */
-		private static function preloadContacts(): void
-		{
-			$connection = Application::getConnection();
-			$sql = "
-				SELECT 
-					ID, 
-					CONCAT(LAST_NAME, ' ', NAME, ' ', SECOND_NAME) as FULL_NAME
-				FROM b_crm_contact
-			";
-			
-			$result = $connection->query($sql);
-			
-			while ($row = $result->fetch()) {
-				// Убираем лишние пробелы из ФИО
-				$fullName = preg_replace('/\s+/', ' ', trim($row['FULL_NAME']));
-				self::$contactsData[(int)$row['ID']] = $fullName;
-			}
-		}
-
-		/**
-		 * Предзагружает даты оказания услуги напрямую из UF_DATE_SERVICE_PROVISION
-		 * По аналогии с ServiceDateDataProvider
-		 * 
-		 * @return void
-		 */
-		private static function preloadServiceDates(): void
-		{
-			$connection = Application::getConnection();
-			$sql = "SELECT VALUE_ID as DEAL_ID, UF_DATE_SERVICE_PROVISION as FIELD_VALUE FROM b_uts_crm_deal";
-			
-			$result = $connection->query($sql);
-			
-			while ($row = $result->fetch()) {
-				$dealId = (int)$row['DEAL_ID'];
-				$value = $row['FIELD_VALUE'];
-				
-				if ($value !== null && $value !== '') {
-					self::$serviceDates[$dealId] = self::formatServiceDate($value);
-				} else {
-					self::$serviceDates[$dealId] = '';
-				}
-			}
-		}
-
-		/**
-		 * Форматирует дату оказания услуги
-		 * Обрабатывает как обычные значения, так и сериализованные массивы
-		 * 
-		 * @param string $value Значение даты из БД
-		 * @return string Форматированная дата (Y-m-d)
-		 */
-		private static function formatServiceDate(string $value): string
-		{
-			// Проверяем сериализованные данные
-			if (self::isSerialized($value)) {
-				$unserialized = @unserialize($value);
-				
-				if (is_array($unserialized)) {
-					$dates = [];
-					foreach ($unserialized as $dateValue) {
-						if ($dateValue !== null && $dateValue !== '') {
-							$formatted = self::parseDateToYmd((string)$dateValue);
-							if ($formatted !== '') {
-								$dates[] = $formatted;
-							}
-						}
-					}
-					
-					// Удаляем дубликаты и сортируем
-					$dates = array_unique($dates);
-					sort($dates);
-					
-					return implode(', ', $dates);
-				}
-			}
-			
-			return self::parseDateToYmd($value);
-		}
-
-		/**
-		 * Парсит дату в формат Y-m-d
-		 * 
-		 * @param string $value Исходное значение даты
-		 * @return string Дата в формате Y-m-d
-		 */
-		private static function parseDateToYmd(string $value): string
-		{
-			$timestamp = strtotime($value);
-			
-			if ($timestamp === false) {
-				return '';
-			}
-			
-			return date('Y-m-d', $timestamp);
-		}
-
-		/**
-		 * Проверяет является ли строка сериализованными данными
-		 * По аналогии с DateFieldHelper
-		 * 
-		 * @param string $value Проверяемое значение
-		 * @return bool
-		 */
-		private static function isSerialized(string $value): bool
-		{
-			if ($value === 'b:0;' || $value === 'b:1;' || $value === 'N;') {
-				return true;
-			}
-			
-			if (preg_match('/^(a|O|s):\d+:/', $value)) {
-				return true;
-			}
-			
-			return false;
-		}
-
-		/**
-		 * Предзагружает данные проводок одним запросом
-		 * 
-		 * @return void
-		 */
-		private static function preloadAccountingEntries(): void
-		{
-			$accountingListDb = AccountingEntryTable::getList([
-				'select' => ['UID'],
-				'filter' => [
-					'!UID' => '',
-					'STATUS' => 'SUCCESS'
-				]
-			]);
-			
-			foreach ($accountingListDb as $accounting) {
-				self::$accountingEntries[$accounting['UID']] = true;
-			}
-		}
-
-		/**
-		 * Предзагружает данные типов оплаты из UF_BRS_CRM_DEAL_PAYMENT_TYPE
-		 * По аналогии с PaymentTypeDataProvider
-		 * 
-		 * @return void
-		 */
-		private static function preloadPaymentTypes(): void
-		{
-			$connection = Application::getConnection();
-			
-			// 1. Получаем ID поля
-			$sqlFieldId = "SELECT ID FROM b_user_field WHERE FIELD_NAME = 'UF_BRS_CRM_DEAL_PAYMENT_TYPE'";
-			$resultFieldId = $connection->query($sqlFieldId);
-			$fieldRow = $resultFieldId->fetch();
-			
-			if (!$fieldRow) {
-				return; // Поле не найдено
-			}
-			
-			$fieldId = (int)$fieldRow['ID'];
-			
-			// 2. Загружаем варианты списка
-			$sqlEnum = "SELECT ID, VALUE FROM b_user_field_enum WHERE USER_FIELD_ID = {$fieldId}";
-			$resultEnum = $connection->query($sqlEnum);
-			
-			$enumValues = [];
-			while ($row = $resultEnum->fetch()) {
-				$enumValues[$row['ID']] = $row['VALUE'];
-			}
-			
-			if (empty($enumValues)) {
-				return; // Нет вариантов списка
-			}
-			
-			// 3. Загружаем значения для сделок
-			$sql = "SELECT VALUE_ID as DEAL_ID, UF_BRS_CRM_DEAL_PAYMENT_TYPE as FIELD_VALUE FROM b_uts_crm_deal";
-			$result = $connection->query($sql);
-			
-			while ($row = $result->fetch()) {
-				$dealId = (int)$row['DEAL_ID'];
-				$enumId = $row['FIELD_VALUE'];
-				
-				if ($enumId && isset($enumValues[$enumId])) {
-					self::$paymentTypes[$dealId] = $enumValues[$enumId];
-				}
-			}
-		}
-
-		/**
-		 * Получает данные сделки из предзагруженных данных
-		 * 
-		 * @param int $dealId ID сделки
-		 * @return array|null Данные сделки или null если не найдена
-		 */
-		private static function getDealData(int $dealId): ?array
-		{
-			return self::$dealsData[$dealId] ?? null;
-		}
-
-		/**
-		 * Получает ФИО контакта из предзагруженных данных
-		 * 
-		 * @param int|null $contactId ID контакта
-		 * @return string ФИО контакта или пустая строка
-		 */
-		private static function getContactName(?int $contactId): string
-		{
-			if ($contactId === null) {
-				return '';
-			}
-			
-			return self::$contactsData[$contactId] ?? '';
-		}
-
-		/**
-		 * Получает дату оказания услуги из предзагруженных данных
-		 * 
-		 * @param int $dealId ID сделки
-		 * @return string Дата или пустая строка
-		 */
-		private static function getServiceDate(int $dealId): string
-		{
-			return self::$serviceDates[$dealId] ?? '';
-		}
-
-		/**
-		 * Проверяет наличие проводки по UID
-		 * 
-		 * @param string $uid UID проводки
-		 * @return bool
-		 */
-		private static function hasAccountingEntry(string $uid): bool
-		{
-			return isset(self::$accountingEntries[$uid]);
-		}
-
-		/**
-		 * Получает тип оплаты из предзагруженных данных
-		 * 
-		 * @param int $dealId ID сделки
-		 * @return string Тип оплаты или пустая строка
-		 */
-		private static function getPaymentType(int $dealId): string
-		{
-			return self::$paymentTypes[$dealId] ?? '';
 		}
 
 		/**
@@ -385,173 +49,134 @@
 		 * 
 		 * @param array $document
 		 */
-		private static function fillReportTable(array $document): void
-		{
-			global $DB;
+		private function fillReportTable(array $document){
 
 			// шапка документа
 			$header = array();
 
-			foreach(CashRegisterTable::$codeHeaderFields as $code => $ruLang){
+			foreach(AgentTable::$codeHeaderFields as $code => $ruLang){
 				$header[] = $ruLang;
 			}
 
 			$headerKeys = array_flip($header); // переворачиваем массив и ищем по ключам
+			
+			$agentNameToCode = array_flip(AgentTable::$codeHeaderFields); // массив соответствий названий колонок и кодов
 
 			// очищаем таблицу
-			Application::getConnection()->truncateTable(CashRegisterTable::getTableName());
+			Application::getConnection()->truncateTable(AgentTable::getTableName());
 
-			if (empty($document['body'])) {
-				return;
-			}
+			// создаём коллекцию
+			$agentCollection = AgentTable::createCollection();
 
-			// формируем единый SQL запрос на вставку в таблицу
-			$sqlInsert = 'INSERT INTO `brs_report_cash_register` (`DEAL_ID`, `TRANSACTION_DATE`, `DATE_SERVICE_PROVISION`, `TRANSACTION_AMOUNT_RUB`, `RECEIPT_TYPE`, `PAYMENT_METHOD`, `PAYMENT_TYPE_DEAL`, `PAYERS_FULL_NAME`, `UNLOADING_OFD`, `UNLOADING_1C`) VALUES '."\r\n";
-			$sqlInsertValues = [];
-
+			// обходим строки документа и записываем в коллекцию
 			foreach($document['body'] as $row){
-				$sqlInsertValues[] = '(\''.$DB->ForSql($row[$headerKeys['Номер сделки']]).'\', \''.$DB->ForSql($row[$headerKeys['Дата транзакции']]).'\', \''.$DB->ForSql($row[$headerKeys['Дата оказания услуги']]).'\', \''.$DB->ForSql($row[$headerKeys['Сумма транзакции, руб.']]).'\', \''.$DB->ForSql($row[$headerKeys['Тип чека']]).'\', \''.$DB->ForSql($row[$headerKeys['Способ оплаты']]).'\', \''.$DB->ForSql($row[$headerKeys['Тип оплаты']]).'\', \''.$DB->ForSql($row[$headerKeys['Клиент']]).'\', \''.$DB->ForSql($row[$headerKeys['Выгрузка ОФД']]).'\', \''.$DB->ForSql($row[$headerKeys['Выгрузка 1С']]).'\')';
+				
+				// создаём объект отчёта
+				$agent = AgentTable::createObject();
+				
+				// получаем и заполняем идентификатор сделки
+				$agent->setDealId((int) str_replace('Сделка №', '', $row[$headerKeys['Номер сделки']]));
+
+				// обходим данные в строке и заполняем ORM объект
+				foreach($row as $columnId => $columnValue){
+
+					if($agentNameToCode[$header[$columnId]] == 'DATA_VYLETA' && !empty($columnValue)){
+						$columnValue = explode(', ', $columnValue);
+					}
+
+					if(!empty($columnValue)){
+						$agent->set($agentNameToCode[$header[$columnId]], $columnValue);
+					}
+
+				}
+
+				$agentCollection->add($agent); // добавляем сформированный объект в коллекцию
+
 			}
 
-			$sqlInsert = $sqlInsert.implode(','."\r\n", $sqlInsertValues).';';
+			@$agentCollection->save(); // сохраняем коллекцию
 
-			$DB->query($sqlInsert);
 		}
 
 		/**
 		 * Метод формирует заголовок и тело документа (отчёта).
 		 * 
-		 * @return array header, body
+		 * @param string $typeRefresh
+		 * @return array header,body
 		 */
-		private static function generateDocumentReport(): array
-		{
+		private static function generateDocumentReport(){
+
+			// подключаем класс компонента расчёта финансовых карточек
+			\CBitrixComponent::includeComponentClass('brs.financialcard:financial-card.calc');
+
+			// получаем путь к формулам финансовой карточки
+			$pathFinancialCardFormulas = str_replace('class.php', 'formulas/', (new \ReflectionClass(\FinancialCalcComponent::class))->getFileName());
+
 			// шапка документа
 			$header = array();
 
-			foreach(CashRegisterTable::$codeHeaderFields as $code => $ruLang){
+			foreach(AgentTable::$codeHeaderFields as $code => $ruLang){
 				$header[] = $ruLang;
 			}
 
-			$receiptType = [
-				'Income' => ReceiptTable::PAYMENT_TYPE_LANG,
-				'IncomeReturn' => 'Возврат денежных средств, полученных от покупателя',
-				'IncomePrepayment' => ReceiptTable::PAYMENT_TYPE_LANG,
-				'IncomeReturnPrepayment' => 'Возврат аванса',
-				'IncomeCorrection' => 'Чек коррекции/приход',
-				'BuyCorrection' => 'Чек коррекции/расход',
-				'IncomeReturnCorrection' => 'Чек коррекции/Возврат прихода',
-				'ExpenseReturnCorrection' => 'Чек коррекции/Возврат расхода',
-				'Expense' => 'Выдача денежных средств покупателю',
-				'ExpenseReturn' => 'Возврат денежных средств, выданных покупателю'
-			];
-
-			$paymentMethods = [
-				'ACQUIRING' => 'Эквайринг',
-				'SERVICE' => 'Услуга',
-			];
-
 			$headerKeys = array_flip($header);
+
+			// принудительно обновляем агентский отчёт
+			Universal::init('changedDeal');
 
 			// тело документа
 			$bodyRows = array();
 
-			// получаем чеки через ORM
-			$receipt = ReceiptTable::getList([
-				'select' => [
-					'DEAL_ID', 'REQUEST_RECEIPT_JSON', 'UID', 'RECEIPT_TYPE', 'PAYMENT_TYPE', 'DATE_CREATE', 'RECEIPT_URL'
-				],
-				'order' => [
-					'ID' => 'DESC'
-				]
-			]);
+			$universalCollection = UniversalTable::getList([])->fetchCollection();
 
-			if($receipt->getSelectedRowsCount() == 0){
-				return [
-					'header' => $header,
-					'body' => $bodyRows,
-				];
-			}
+			foreach($universalCollection as $universal){
 
-			$receiptCollection = $receipt->fetchAll();
-
-			// обходим массив чеков и формируем тело документа
-			foreach($receiptCollection as $receiptItem){
-
-				$dealId = (int)$receiptItem['DEAL_ID'];
-				
-				// получаем данные сделки из предзагруженных данных
-				$dealData = self::getDealData($dealId);
-				
-				if ($dealData === null) {
-					continue;
-				}
-
-				// исключаем категорию Elite Tiers Registration (ID = 21)
-				if ($dealData['CATEGORY_ID'] === '21') {
-					continue;
-				}
-
-				$request = json_decode($receiptItem['REQUEST_RECEIPT_JSON'], true);
-
-				// вычисляем сумму транзакции
-				$sumTransaction = 0;
-				$paymentItems = $request['Request']['CustomerReceipt']['PaymentItems'] ?? [];
-
-				foreach($paymentItems as $paymentItem){
-					$sumTransaction += $paymentItem['Sum'];
-				}
-
-				$sumTransaction = number_format((float)$sumTransaction, 2, ',', '');
-
-				// получаем ФИО клиента из предзагруженных данных
-				$contactId = $dealData['CONTACT_ID'] ? (int)$dealData['CONTACT_ID'] : null;
-				$contactName = self::getContactName($contactId);
-				$client = $contactId 
-					? '<a href="/crm/contact/details/'. $contactId .'/">' . $contactName . '</a>'
-					: '';
-
-				// проверяем наличие проводки
-				$is1C = self::hasAccountingEntry($receiptItem['UID']) ? 'Да' : 'Нет';
-
-				// определяем тип чека
-				$receiptTypeName = '';
-				if (isset($receiptType[$receiptItem['RECEIPT_TYPE']])) {
-					if (is_array($receiptType[$receiptItem['RECEIPT_TYPE']])) {
-						$receiptTypeName = $receiptType[$receiptItem['RECEIPT_TYPE']][$receiptItem['PAYMENT_TYPE']] ?? '';
-					} else {
-						$receiptTypeName = $receiptType[$receiptItem['RECEIPT_TYPE']];
-					}
-				}
-
-				// определяем способ оплаты
-				$paymentMethod = $paymentMethods['ACQUIRING']; // по умолчанию эквайринг
-				$costumerPaymentType = $request['Request']['CustomerReceipt']['PaymentType'] ?? null;
-
-				if ($costumerPaymentType == 4) {
-					$paymentMethod = $paymentMethods['SERVICE'];
-				}
-
-				// получаем дату оказания услуги из предзагруженных данных
-				$dateServiceProvision = self::getServiceDate($dealId);
-
-				// получаем тип оплаты из предзагруженных данных
-				$paymentTypeDeal = self::getPaymentType($dealId);
-
-				// формируем строку документа
 				$bodyRow = [
-					$headerKeys['Номер сделки'] => $receiptItem['DEAL_ID'],
-					$headerKeys['Дата транзакции'] => $receiptItem['DATE_CREATE'] ? $receiptItem['DATE_CREATE']->format('Y-m-d') : '',
-					$headerKeys['Дата оказания услуги'] => $dateServiceProvision,
-					$headerKeys['Сумма транзакции, руб.'] => $sumTransaction,
-					$headerKeys['Тип чека'] => $receiptTypeName,
-					$headerKeys['Способ оплаты'] => $paymentMethod,
-					$headerKeys['Тип оплаты'] => $paymentTypeDeal,
-					$headerKeys['Клиент'] => $client,
-					$headerKeys['Выгрузка ОФД'] => !empty($receiptItem['RECEIPT_URL']) ? 'Да' : 'Нет',
-					$headerKeys['Выгрузка 1С'] => $is1C,
+					$headerKeys['Номер сделки'] => $universal->getDealId(),
+					$headerKeys['Название сделки'] => $universal->getTitleDeal(),
+					$headerKeys['Категория'] => $universal->get('KATEGORIYA'),
+					$headerKeys['Ответственное лицо'] => $universal->get('OTVETSTVENNOE_LITSO'),
+					$headerKeys['Комментарий Тимлидеру'] => $universal->get('COMMENT_TEAMLEADER'),
+					$headerKeys['ID клиента'] => $universal->get('ID_KLIENTA'),
+					$headerKeys['Связанные сделки'] => $universal->get('BIND_DEAL'),
+					$headerKeys['Лид'] => $universal->get('LEAD_ID'),
+					$headerKeys['Город'] => $universal->get('GOROD'),
+					$headerKeys['Страна'] => $universal->get('STRANA'),
+					$headerKeys['Результат сделки'] => $universal->get('REZULTAT_SDELKI'),
+					$headerKeys['Статус сделки'] => $universal->get('STATUS_SDELKI'),
+					$headerKeys['Тип клиента'] => $universal->get('TIP_KLIENTA'),
+					$headerKeys['Клиент'] => $universal->get('KLIENT'),
+					$headerKeys['Партнёр'] => $universal->get('PARTNER'),
+					$headerKeys['Дата оказания услуги'] => $universal->get('DATE_SERVICE_PROVISION'),
+					$headerKeys['Тип оплаты'] => $universal->get('TYPE_PAYMENT'),
+					$headerKeys['Дата оплаты Клиентом'] => $universal->get('DATA_OPLATY_KLIENTOM'),
+					$headerKeys['Итого оплачено Клиентом'] => $universal->get('TOTAL_PAID_CLIENT'),
+					$headerKeys['Дата создания фин.карты'] => $universal->get('DATA_SOZDANIYA_FIN_KARTY'),
+					$headerKeys['Полное наименование организации'] => $universal->get('FULL_NAME_ORGANIZATION'),
+					$headerKeys['Сумма продажи'] => $universal->get('SUMMA_PRODAZHI_VSEGO_K_OPLATE_KLIENTOM'),
+					$headerKeys['Оплата поставщику'] => $universal->get('PAYMENT_SUPPLIER'),
+					$headerKeys['Нетто в валюте поставщика'] => $universal->get('NET_SUPPLIER_CURRENCY'),
+					$headerKeys['Нетто в рублях'] => $universal->get('NET_RUBLES'),
+					$headerKeys['Прибыль'] => $universal->get('PRIBYL_SERVISNYY_SBOR_KOMISSIYA_DOPOLNITELNAYA_VYGODA'),
+					$headerKeys['Дата отмены операции'] => $universal->get('DATA_OTMENY_OPERATSII_VOZVRAT'),
+					$headerKeys['Статус карты возврата'] => $universal->get('STATUS_CARD_REFUND'),
+					$headerKeys['Сумма возврата клиентом'] => $universal->get('REFOUND_AMOUNT_CLIENT'),
+					$headerKeys['Прибыль РС ТЛС с учетом возврата'] => $universal->get('PROFIT_RSTLS_REFOUND'),
+					$headerKeys['Дата создания сделки'] => $universal->get('DATA_SOZDANIYA_SDELKI'),
+					$headerKeys['Участие агента'] => $universal->get('UCHASTIYA_AGENTA_V_PRODAZHE'),
+					$headerKeys['Кросс-продажа'] => $universal->get('IS_CROSS_SELLING'),
+					$headerKeys['Кросс-продажа причина'] => $universal->get('CROSS_SELLING_REASON'),
+					$headerKeys['Дата отложенной оплаты'] => $universal->get('DEFERRED_DATE_ACTIVE_FINISH'),
+					$headerKeys['Валюта отложенной оплаты'] => $universal->get('DEFERRED_CURRENCY'),
+					$headerKeys['Сумма отложенной оплаты, руб'] => $universal->get('DEFERRED_AMOUNT'),
+					$headerKeys['Сумма отложенной оплаты, валюта'] => $universal->get('DEFERRED_AMOUNT_CURRENCY'),
+					$headerKeys['Дата начала'] => $universal->get('DATE_START'),
+					$headerKeys['Дата окончания'] => $universal->get('DATE_FINISH'),
 				];
+
+				ksort($bodyRow);
 				
-				$bodyRows[] = $bodyRow;
+				$bodyRows[$universal->getDealId()] = $bodyRow;
 
 			}
 
