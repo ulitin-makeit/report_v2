@@ -407,7 +407,8 @@ class PaymentByPoints {
 			`LOYALTY_PROGRAM_TYPE`, 
 			`OPERATION_TYPE`, 
 			`POINT_AMOUNT`, 
-			`AMOUNT`
+			`AMOUNT`,
+			`ACCOUNT_ID`
 		) VALUES '."\r\n";
 
 		$sqlInsertValues = [];
@@ -425,7 +426,8 @@ class PaymentByPoints {
 				$DB->ForSql($row[$headerKeys['Тип программы лояльности']]).'\', \''.
 				$DB->ForSql($row[$headerKeys['Тип операции']]).'\', \''.
 				$DB->ForSql($row[$headerKeys['Сумма списания в баллах']]).'\', \''.
-				$DB->ForSql($row[$headerKeys['Сумма списания в рублях']]).'\')';
+				$DB->ForSql($row[$headerKeys['Сумма списания в рублях']]).'\', \''.
+				$DB->ForSql($row[$headerKeys['ID счёта']]).'\')';
 		}
 
 		$sqlInsert = $sqlInsert.implode(','."\r\n", $sqlInsertValues).';';
@@ -541,6 +543,14 @@ class PaymentByPoints {
 			// определяем тип операции
 			$operationType = $operationTypeMap[$transaction['PAYMENT_TYPE']] ?? '';
 
+			// определяем ID счёта в зависимости от типа программы лояльности
+			$accountId = '';
+			if ($loyaltyProgramType === 'Membership Rewards') {
+				$accountId = $contactData['MR_ACCOUNT_ID'] ?? '';
+			} elseif ($loyaltyProgramType === 'Imperia Rewards') {
+				$accountId = $contactData['IMPERIA_ACCOUNT_ID'] ?? '';
+			}
+
 			// форматируем суммы
 			$pointAmount = number_format((float)$transaction['POINT_AMOUNT'], 2, ',', '');
 			$amount = number_format((float)$transaction['AMOUNT'], 2, ',', '');
@@ -559,6 +569,7 @@ class PaymentByPoints {
 				$headerKeys['Тип операции'] => $operationType,
 				$headerKeys['Сумма списания в баллах'] => $pointAmount,
 				$headerKeys['Сумма списания в рублях'] => $amount,
+				$headerKeys['ID счёта'] => $accountId,
 			];
 
 			$bodyRows[] = $bodyRow;

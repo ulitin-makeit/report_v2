@@ -37,7 +37,8 @@ class PaymentByPointsTable extends DataManager {
 		'LOYALTY_PROGRAM_TYPE' => 'Тип программы лояльности',
 		'OPERATION_TYPE' => 'Тип операции',
 		'POINT_AMOUNT' => 'Сумма списания в баллах',
-		'AMOUNT' => 'Сумма списания в рублях'
+		'AMOUNT' => 'Сумма списания в рублях',
+		'ACCOUNT_ID' => 'ID счёта'
 	);
 
 	public static function getTableName(): string {
@@ -66,6 +67,7 @@ class PaymentByPointsTable extends DataManager {
 			new Fields\StringField('OPERATION_TYPE'), // Тип операции (продажа/возврат)
 			new Fields\StringField('POINT_AMOUNT'), // Сумма списания в баллах
 			new Fields\StringField('AMOUNT'), // Сумма списания в рублях
+			new Fields\StringField('ACCOUNT_ID'), // ID счёта (MR_ACCOUNT_ID или IMPERIA_ACCOUNT_ID)
 
 		];
 	}
