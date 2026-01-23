@@ -288,7 +288,9 @@
 			// получаем фильтр из грида
 			$filterOption = new \Bitrix\Main\UI\Filter\Options(self::$filterCode);
  
-			$filterData = $filterOption->getFilter([]);
+			// Получаем фильтры из запроса, чтобы применить актуальные фильтры при экспорте
+			// Используем $_REQUEST для получения всех параметров (GET, POST), которые нужны для фильтра
+			$filterData = $filterOption->getFilter($_REQUEST);
 
 			$getListParams['filter'] = array();
 

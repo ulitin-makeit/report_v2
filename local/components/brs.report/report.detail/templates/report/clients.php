@@ -154,7 +154,33 @@
 						var exportFormat = $('#report-Clients-export-select-format').val();
 						var columnSort = $('#report-Clients-export-column-sort').prop('checked');
 						
-						window.open('/crm/reports/report/?report=Clients&export=' + exportFormat + '&limit=' + limit + '&columnSort=' + columnSort, '_blank');
+						// Получаем все параметры фильтра из текущего URL
+						var urlParams = new URLSearchParams(window.location.search);
+						var filterParams = '';
+						var filterId = '<?=Clients::$filterCode?>';
+						
+						// Собираем все параметры фильтра Bitrix:
+						// - параметры с префиксом find_ (значения фильтров)
+						// - параметры с ID фильтра (apply, clear, preset_id и т.д.)
+						urlParams.forEach(function(value, key) {
+							if (key.indexOf('find_') === 0 || 
+								key.indexOf(filterId) === 0 || 
+								key === 'apply_filter' || 
+								key === 'clear_filter') {
+								if (filterParams !== '') {
+									filterParams += '&';
+								}
+								filterParams += encodeURIComponent(key) + '=' + encodeURIComponent(value);
+							}
+						});
+						
+						// Формируем URL экспорта с параметрами фильтра
+						var exportUrl = '/crm/reports/report/?report=Clients&export=' + exportFormat + '&limit=' + limit + '&columnSort=' + columnSort;
+						if (filterParams !== '') {
+							exportUrl += '&' + filterParams;
+						}
+						
+						window.open(exportUrl, '_blank');
 						
 						button.context.close();
 						
