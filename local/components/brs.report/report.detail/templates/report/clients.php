@@ -154,25 +154,89 @@
 						var exportFormat = $('#report-Clients-export-select-format').val();
 						var columnSort = $('#report-Clients-export-column-sort').prop('checked');
 						
-						// Получаем все параметры фильтра из текущего URL
-						var urlParams = new URLSearchParams(window.location.search);
-						var filterParams = '';
 						var filterId = '<?=Clients::$filterCode?>';
+						var filterParams = '';
 						
-						// Собираем все параметры фильтра Bitrix:
-						// - параметры с префиксом find_ (значения фильтров)
-						// - параметры с ID фильтра (apply, clear, preset_id и т.д.)
-						urlParams.forEach(function(value, key) {
-							if (key.indexOf('find_') === 0 || 
-								key.indexOf(filterId) === 0 || 
-								key === 'apply_filter' || 
-								key === 'clear_filter') {
-								if (filterParams !== '') {
-									filterParams += '&';
+						// Получаем текущие значения фильтра через API Bitrix UI Filter
+						try {
+							if (typeof BX.Main.filterManager !== 'undefined') {
+								var filterManager = BX.Main.filterManager.getById(filterId);
+								if (filterManager) {
+									// Пробуем разные методы получения фильтров
+									var filterValues = null;
+									
+									// Метод 1: getFilterFieldsValues()
+									if (typeof filterManager.getFilterFieldsValues === 'function') {
+										filterValues = filterManager.getFilterFieldsValues();
+									}
+									// Метод 2: getFilterValues()
+									else if (typeof filterManager.getFilterValues === 'function') {
+										filterValues = filterManager.getFilterValues();
+									}
+									// Метод 3: getFilter()
+									else if (typeof filterManager.getFilter === 'function') {
+										filterValues = filterManager.getFilter();
+									}
+									
+									if (filterValues) {
+										// Формируем параметры фильтра из текущих значений
+										for (var key in filterValues) {
+											if (filterValues.hasOwnProperty(key)) {
+												var value = filterValues[key];
+												
+												// Пропускаем пустые значения
+												if (value === '' || value === null || value === undefined) {
+													continue;
+												}
+												
+												// Обрабатываем массивы
+												if (Array.isArray(value)) {
+													if (value.length > 0) {
+														for (var i = 0; i < value.length; i++) {
+															if (value[i] !== '' && value[i] !== null) {
+																if (filterParams !== '') {
+																	filterParams += '&';
+																}
+																filterParams += encodeURIComponent('find_' + key + '[]') + '=' + encodeURIComponent(value[i]);
+															}
+														}
+													}
+												} else {
+													// Обычные значения
+													if (filterParams !== '') {
+														filterParams += '&';
+													}
+													filterParams += encodeURIComponent('find_' + key) + '=' + encodeURIComponent(value);
+												}
+											}
+										}
+										
+										// Добавляем параметр apply_filter для применения фильтра
+										if (filterParams !== '') {
+											filterParams += '&apply_filter=Y';
+										}
+									}
 								}
-								filterParams += encodeURIComponent(key) + '=' + encodeURIComponent(value);
 							}
-						});
+						} catch(e) {
+							console.error('Error getting filter values:', e);
+						}
+						
+						// Если не удалось получить через API, пробуем из URL
+						if (filterParams === '') {
+							var urlParams = new URLSearchParams(window.location.search);
+							urlParams.forEach(function(value, key) {
+								if (key.indexOf('find_') === 0 || 
+									key.indexOf(filterId) === 0 || 
+									key === 'apply_filter' || 
+									key === 'clear_filter') {
+									if (filterParams !== '') {
+										filterParams += '&';
+									}
+									filterParams += encodeURIComponent(key) + '=' + encodeURIComponent(value);
+								}
+							});
+						}
 						
 						// Формируем URL экспорта с параметрами фильтра
 						var exportUrl = '/crm/reports/report/?report=Clients&export=' + exportFormat + '&limit=' + limit + '&columnSort=' + columnSort;
